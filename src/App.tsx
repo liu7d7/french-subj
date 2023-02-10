@@ -1,8 +1,17 @@
 import React, {useEffect, useState} from 'react';
-import exp from "constants";
 
 enum SubjectType {
   fs, ss, ts, fp, sp, tp
+}
+
+let conjugations: any = null
+
+async function getConjugations(): Promise<any> {
+  if (conjugations == null) {
+    let f = await fetch(`${window.location}/vbs.json`)
+    conjugations = await f.json()
+  }
+  return conjugations
 }
 
 type Subject = {
@@ -60,6 +69,10 @@ const subLen = [
   3, 3, 11, 5, 5, 9
 ]
 
+function removeAccents(str: string): string {
+  return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+}
+
 async function conjugate(verb: string, subj: Subject, type: ConjType): Promise<string> {
   let adj: string = ""
   if (verb.includes(" ")) {
@@ -67,17 +80,8 @@ async function conjugate(verb: string, subj: Subject, type: ConjType): Promise<s
     verb = verb.substring(0, verb.indexOf(" "))
   }
 
-  const options = {
-    method: 'GET',
-    headers: {
-      'X-RapidAPI-Key': 'd38e07b734mshc8412da9f314e69p12532djsn2b4af091c918',
-      'X-RapidAPI-Host': 'french-conjugaison.p.rapidapi.com'
-    }
-  };
-
-  let f = await fetch(`https://french-conjugaison.p.rapidapi.com/conjugate/${verb.normalize("NFD").replace(/[\u0300-\u036f]/g, "")}`, options)
-  let js = await f.json()
   let s: string = ""
+  let js = (await getConjugations())[removeAccents(verb)]
   switch (type) {
     case ConjType.sub: {
       s = js.data.subjonctif.present[`subjonctifPresent${subTypeToEnglish[subj.type]}`]
@@ -116,7 +120,7 @@ async function conjugate(verb: string, subj: Subject, type: ConjType): Promise<s
     if (subj.fem)
       s += 'e'
   }
-  return s
+  return trim(s)
 }
 
 type Sentence = {
@@ -126,42 +130,46 @@ type Sentence = {
   asking: string
 }
 
+function startsVowel(str: string): boolean {
+  str = trim(str)
+  str = removeAccents(str)
+  return str.startsWith("a") || str.startsWith("e") ||str.startsWith("i") ||str.startsWith("o") ||str.startsWith("u") || str.startsWith("ha")
+}
+
+function adjustSubjOrPreposition(str: string, nextVowel: boolean): string {
+  if ((str.endsWith("e") || str.endsWith("a")) && str !== "elle" && nextVowel) {
+    str = str.substring(0, str.length - 1)
+    str += "'"
+  } else {
+    str += " "
+  }
+  return str
+}
+
 async function getSentence(verbs: string[]) : Promise<Sentence> {
-  await new Promise(resolve => setTimeout(resolve, 1500))
   let sub = subjects[Math.floor(Math.random() * subjects.length)]
   let verb = await conjugate(mainClauses[Math.floor(mainClauses.length * Math.random())], sub, ConjType.ind)
   let sentence = ""
-  if ((verb[0] === 'a' || verb[0] === 'u' || verb[0] === 'e' || verb[0] === 'i') && sub.display === "je") {
-    sentence += "j'"
-  } else {
-    sentence += sub.display + " "
-  }
-  await new Promise(resolve => setTimeout(resolve, 1500))
+  sentence += adjustSubjOrPreposition(sub.display, startsVowel(verb))
   sentence += verb
   sentence += " "
   let negate: boolean = Math.random() > 0.5
-  let asking: string = ""
-  let expected: string = ""
+  let asking: string
+  let expected: string
   let sub2 = subjects[Math.floor(Math.random() * subjects.length)]
   if (sub2.display === sub.display) {
-    sentence += "de {verb here}"
     asking = verbs[Math.floor(verbs.length * Math.random())]
     expected = await conjugate(asking, sub2, ConjType.inf)
+    sentence += adjustSubjOrPreposition("de", startsVowel(expected) && !negate)
     if (negate) expected = "ne pas " + expected
   } else {
-    let fc = sub2.display[0]
-    if (fc === 'i' || fc === 'e' || fc === 'o') sentence += " qu'"
+    if (startsVowel(sub2.display)) sentence += " qu'"
     else sentence += " que "
-    sentence += sub2.display + " {verb here}"
     asking = verbs[Math.floor(verbs.length * Math.random())]
     expected = await conjugate(asking, sub2, ConjType.sub)
+    sentence += adjustSubjOrPreposition(sub2.display, startsVowel(expected) && !negate)
     if (negate) {
-      let begin = ""
-      if (expected[0] === "u" || expected[0] === "i" || expected[0] === "e" || expected[0] === "a" || expected[0] === "o") {
-        begin = "n'"
-      } else {
-        begin = "ne "
-      }
+      let begin: string = adjustSubjOrPreposition("ne", startsVowel(expected))
       expected = begin + expected
       expected += " pas"
     }
@@ -169,39 +177,84 @@ async function getSentence(verbs: string[]) : Promise<Sentence> {
   return {begin: sentence, asking: asking, expected: expected, negate2nd: negate}
 }
 
+let verbs = [] as string[]
+async function getVerbs(): Promise<string[]> {
+  if (verbs.length === 0) {
+    let f = await fetch(`${window.location}/vb.txt`)
+    let txt = await f.text()
+    let split: string[] = txt.split(/[\r\n]+/)
+    verbs = split.map(function(it) {return it.substring(0, it.indexOf(" –")).trim()})
+  }
+  return verbs
+}
+
+const loading: string = "loading..."
+
+function trim(str: string): string {
+  str = str.trim()
+  while (str.includes("  "))
+    str = str.replace("  ", " ")
+  return str
+}
+
 function App() {
   const [sentence, setSentence] = useState({} as unknown as Sentence)
-  const [update, setUpdate] = useState(1)
   const [ans, setAns] = useState("")
   const [showAns, setShowAns] = useState(false)
 
-  useEffect(() => {
-    (async () => {
-      let f = await fetch("vb.txt")
-      let txt = await f.text()
-      let split = txt.split("\r\n")
-      let verbs = split.map(it => it.substring(0, it.indexOf(" –")).trim())
-      verbs.pop()
-      setSentence(await getSentence(verbs))
+  async function redo() {
+    setSentence(await getSentence(await getVerbs()))
+    setShowAns(false)
+    setAns("")
+  }
+
+  async function onKeyDown(evt: React.KeyboardEvent<HTMLDivElement>) {
+    if (evt.repeat) return;
+    if (evt.key.toLowerCase() === "enter") {
+      if (showAns) {
+        redo()
+        return
+      }
+      setShowAns(true)
+    }
+  }
+
+  useEffect(function() {
+    (async function() {
+      setSentence(await getSentence(await getVerbs()))
     })()
-  }, [update])
+  }, [])
 
   return (
-    <div className="App">
-      {sentence.begin}
-      <br/>
-      {sentence.asking}
-      <br/>
-      {sentence.negate2nd ? "negate" : "don't negate"}
-      <br/>
-      <input value={ans} onChange={it => setAns(it.target.value)}/>
-      <button onClick={() => setShowAns(true)}>done!</button>
-      {showAns && <div style={{backgroundColor: (sentence.expected.trim() === ans.trim() ? "#90EE90" : "#FFCCCB")}}>{`got ${ans}, expected ${sentence.expected}`}</div>}
-      {showAns && <button onClick={() => {
-        setUpdate(update + 1)
-        setShowAns(false)
-        setAns("")
-      }}>go again!</button>}
+    <div className="m-6" onKeyDown={onKeyDown}>
+      <div>
+        infinitive or subjunctive?
+      </div>
+      {sentence.begin &&
+        <div>
+          {sentence.asking}
+          <br/>
+          {sentence.negate2nd ? <b>negation</b> : <span><b>no</b> negation</span>}
+          <br/>
+          {sentence.begin}
+          <input className={"border-b-2 border-black focus:outline-none"} value={ans} onChange={function(it) {
+            setAns(it.target.value)
+          }}/>
+          <br/>
+        </div>
+      }
+      {!sentence.begin &&
+        loading
+      }
+      {showAns && <div className={"-ml-6 pl-6"} style={{backgroundColor: ((trim(sentence.expected) === trim(ans)) ? "#90EE90" : "#FFCCCB")}}>{`got ${trim(ans)}, expected ${trim(sentence.expected)}`}</div>}
+      {showAns &&
+          <button onClick={async function() {
+            if (showAns) {
+              redo()
+            }
+            }}>go again!
+          </button>
+      }
     </div>
   );
 }
